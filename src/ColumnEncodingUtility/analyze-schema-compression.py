@@ -58,7 +58,7 @@ try:
 except:
     pass
 
-import aws_utils
+import redshift_utils_helper as aws_utils
 import config_constants
 
 thismodule = sys.modules[__name__]
@@ -103,6 +103,7 @@ new_sort_keys = None
 debug = False
 threads = 1
 analyze_col_width = False
+new_varchar_min = None
 do_execute = False
 query_slot_count = 1
 ignore_errors = False
@@ -506,6 +507,11 @@ def reduce_column_length(col_type, column_name, table_name):
         # if the new length would be greater than varchar(max) then return the current value - no changes
         if new_column_len > 65535:
             return col_type
+
+        # if the new length would be smaller than the specified new varchar minimum then set to varchar minimum
+        if new_column_len < new_varchar_min:
+            new_column_len = new_varchar_min
+
         # if the new length would be 0 then return the current value - no changes
         if new_column_len == 0:
             return col_type
@@ -626,7 +632,6 @@ def analyze(table_info):
             non_identity_columns = []
             fks = []
             table_distkey = None
-            table_sortkeys = []
             new_sortkey_arr = [t.strip() for t in new_sort_keys.split(',')] if new_sort_keys is not None else []
 
             # count of suggested optimizations
@@ -641,20 +646,13 @@ def analyze(table_info):
                 # compare the previous encoding to the new encoding
                 # don't use new encoding for first sortkey
                 datatype = descr[col][1]
-
-                # use az64 coding if supported. ANALYZE COMPRESSION does not yet support this but it is recommended by AWS
-                # see https://docs.amazonaws.cn/en_us/redshift/latest/dg/c_Compression_encodings.html for supported types
-                new_encoding = 'az64' if datatype in ['integer', 'smallint', 'integer', 'bigint', 'decimal', 'date', 'timestamp without time zone', 'timestamp with time zone'] else row[2]
+                new_encoding = row[2]
                 new_encoding = new_encoding if not abs(row_sortkey) == 1 else 'raw'
                 old_encoding = descr[col][2]
                 old_encoding = 'raw' if old_encoding == 'none' else old_encoding
                 if new_encoding != old_encoding:
                     encodings_modified = True
                     count_optimized += 1
-
-                    if debug:
-                        comment("Column %s will be modified from %s encoding to %s encoding" % (
-                            col, old_encoding, new_encoding))
 
                 # fix datatypes from the description type to the create type
                 col_type = descr[col][1].replace('character varying', 'varchar').replace('without time zone', '')
@@ -687,23 +685,20 @@ def analyze(table_info):
                 if table_name is not None and len(new_sortkey_arr) > 0:
                     if col in new_sortkey_arr:
                         sortkeys[new_sortkey_arr.index(col) + 1] = col
-                        table_sortkeys.append(col)
                 else:
                     if row_sortkey != 0:
                         # add the absolute ordering of the sortkey to the list of all sortkeys
                         sortkeys[abs(row_sortkey)] = col
-                        table_sortkeys.append(col)
 
                         if row_sortkey < 0:
                             has_zindex_sortkeys = True
 
                 # don't compress first sort key column. This will be set on the basis of the existing sort key not
                 # being modified, or on the assignment of the new first sortkey
-                if (abs(row_sortkey) == 1 and len(new_sortkey_arr) == 0) or (
-                        col in table_sortkeys and table_sortkeys.index(col) == 0):
+                if sortkeys.get(1, None) == col:
                     compression = 'RAW'
                 else:
-                    compression = row[2]
+                    compression = new_encoding
 
                 # extract null/not null setting
                 col_null = descr[col][5]
@@ -727,6 +722,10 @@ def analyze(table_info):
                     default_value = ''
                     non_identity_columns.append('"%s"' % col)
 
+                if debug:
+                    comment("Column %s will be encoded as %s (previous %s)" % (
+                        col, compression, old_encoding))
+
                 # add the formatted column specification
                 encode_columns.extend(['"%s" %s %s %s encode %s %s'
                                        % (col, col_type, default_value, col_null, compression, distkey)])
@@ -737,11 +736,13 @@ def analyze(table_info):
                 comment(msg)
                 raise Exception(msg)
 
+            ordered_sortkey_columns = [sortkeys[index] for index in range(1, len(sortkeys) + 1)]
+
             # abort if new sortkeys were set but we couldn't find them in the set of all columns
-            if new_sort_keys is not None and len(table_sortkeys) != len(new_sortkey_arr):
+            if new_sort_keys is not None and len(ordered_sortkey_columns) != len(new_sortkey_arr):
                 if debug:
                     comment("Requested Sort Keys: %s" % new_sortkey_arr)
-                    comment("Resolved Sort Keys: %s" % table_sortkeys)
+                    comment("Resolved Sort Keys: %s" % ordered_sortkey_columns)
                 msg = "Column resolution of sortkeys '%s' not found when setting new Table Sort Keys" % new_sortkey_arr
                 comment(msg)
                 raise Exception(msg)
@@ -769,13 +770,10 @@ def analyze(table_info):
                         comment("Adding Sortkeys: %s" % sortkeys)
                     sortkey = '%sSORTKEY(' % ('INTERLEAVED ' if has_zindex_sortkeys else '')
 
-                    for i in range(1, len(sortkeys) + 1):
-                        sortkey = sortkey + sortkeys[i]
+                    ordered_sortkey_columns = [sortkeys[index] for index in range(1, len(sortkeys) + 1)]
 
-                        if i != len(sortkeys):
-                            sortkey = sortkey + ','
-                        else:
-                            sortkey = sortkey + ')\n'
+                    sortkey += ','.join(ordered_sortkey_columns) + ')\n'
+
                     create_table = create_table + (' %s ' % sortkey)
 
                 create_table = create_table + ';'
@@ -787,7 +785,7 @@ def analyze(table_info):
                 statements.extend([get_primary_key(schema_name, set_target_schema, table_name, target_table)])
 
                 # set the table owner
-                statements.extend(['alter table %s."%s" owner to %s;' % (set_target_schema, target_table, owner)])
+                statements.extend(['alter table %s."%s" owner to "%s";' % (set_target_schema, target_table, owner)])
 
                 if table_comment is not None:
                     statements.extend(
@@ -808,8 +806,8 @@ def analyze(table_info):
                                                                             source_columns,
                                                                             schema_name,
                                                                             table_name)
-                if len(table_sortkeys) > 0:
-                    insert = "%s order by \"%s\";" % (insert, ",".join(table_sortkeys).replace(',', '\",\"'))
+                if len(ordered_sortkey_columns) > 0:
+                    insert = "%s order by \"%s\";" % (insert, ",".join(ordered_sortkey_columns).replace(',', '\",\"'))
                 else:
                     insert = "%s;" % (insert)
 
@@ -889,6 +887,7 @@ def usage(with_message):
     print('           --analyze-schema      - The Schema to be Analyzed (default public)')
     print('           --analyze-table       - A specific table to be Analyzed, if --analyze-schema is not desired')
     print('           --analyze-cols        - Analyze column width and reduce the column width if needed')
+    print('           --new-varchar-min     - Set minimum varchar length for new width (to be used with --analyze-cols)')
     print('           --new-dist-key        - Set a new Distribution Key (only used if --analyze-table is specified)')
     print(
         '           --new-sort-keys       - Set a new Sort Key using these comma separated columns (Compound Sort key only , and only used if --analyze-table is specified)')
@@ -926,6 +925,7 @@ def configure(**kwargs):
     global new_dist_key
     global new_sort_keys
     global analyze_col_width
+    global new_varchar_min
     global target_schema
     global debug
     global do_execute
@@ -1131,7 +1131,7 @@ order by 2;
 
 
 def main(argv):
-    supported_args = """db= db-user= db-pwd= db-host= db-port= target-schema= analyze-schema= analyze-table= new-dist-key= new-sort-keys= analyze-cols= threads= debug= output-file= do-execute= slot-count= ignore-errors= force= drop-old-data= comprows= query_group= ssl-option= suppress-cloudwatch= statement-timeout="""
+    supported_args = """db= db-user= db-pwd= db-host= db-port= target-schema= analyze-schema= analyze-table= new-dist-key= new-sort-keys= analyze-cols= new-varchar-min= threads= debug= output-file= do-execute= slot-count= ignore-errors= force= drop-old-data= comprows= query_group= ssl-option= suppress-cloudwatch= statement-timeout="""
 
     # extract the command line arguments
     try:
@@ -1179,6 +1179,9 @@ def main(argv):
         elif arg == "--analyze-cols":
             if value != '' and value is not None:
                 args['analyze_col_width'] = value
+        elif arg == "--new-varchar-min":
+            if value != '' and value is not None:
+                args['new_varchar_min'] = int(value)
         elif arg == "--target-schema":
             if value != '' and value is not None:
                 args[config_constants.TARGET_SCHEMA] = value

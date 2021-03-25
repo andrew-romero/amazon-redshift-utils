@@ -6,6 +6,8 @@ History:
 2018-01-15 pvbouwel      Add QUOTE_IDENT for identifiers (function name)
 2018-01-24 joeharris76   Support for SQL functions
 2019-04-03 adedotua      Added schemaname, ending semi-colon and 'OR REPLACE' 
+2020-04-15 joeharris76   Exclude stored procedures - use `SHOW PROCEDURE sp_name;` instead
+2020-08-17 adedotua      Updated filter to ignore stored procedures
 **********************************************************************************************/
 CREATE OR REPLACE VIEW admin.v_generate_udf_ddl
 AS
@@ -26,7 +28,8 @@ SELECT
 1000 as seq, ('CREATE OR REPLACE FUNCTION ' || QUOTE_IDENT(n.nspname) ||'.'|| QUOTE_IDENT(p.proname) || ' \(')::varchar(max) as ddl
 FROM pg_proc p
 LEFT JOIN pg_namespace n on n.oid = p.pronamespace
-WHERE p.proowner != 1
+JOIN pg_language l on p.prolang = l.oid
+WHERE p.proowner != 1 AND l.lanname <> 'plpgsql'
 UNION ALL
 SELECT 
    n.nspname AS schemaname,
@@ -36,7 +39,8 @@ SELECT
 FROM pg_proc p
 LEFT JOIN pg_namespace n on n.oid = p.pronamespace
 LEFT JOIN arguments a on a.oid = p.oid
-WHERE p.proowner != 1
+JOIN pg_language l on p.prolang = l.oid
+WHERE p.proowner != 1 AND l.lanname <> 'plpgsql'
 UNION ALL
 SELECT 
    n.nspname AS schemaname,
@@ -45,7 +49,8 @@ SELECT
 3000 as seq, '\)' as ddl
 FROM pg_proc p
 LEFT JOIN pg_namespace n on n.oid = p.pronamespace
-WHERE p.proowner != 1
+JOIN pg_language l on p.prolang = l.oid
+WHERE p.proowner != 1 AND l.lanname <> 'plpgsql'
 UNION ALL
 SELECT 
    n.nspname AS schemaname,
@@ -54,7 +59,8 @@ SELECT
  4000 as seq, '  RETURNS ' || pg_catalog.format_type(p.prorettype, NULL) as ddl
 FROM pg_proc p
 LEFT JOIN pg_namespace n on n.oid = p.pronamespace
-WHERE p.proowner != 1
+JOIN pg_language l on p.prolang = l.oid
+WHERE p.proowner != 1 AND l.lanname <> 'plpgsql'
 UNION ALL
 SELECT 
    n.nspname AS schemaname,
@@ -63,7 +69,8 @@ SELECT
 5000 AS seq, CASE WHEN p.provolatile = 'v' THEN 'VOLATILE' WHEN p.provolatile = 's' THEN 'STABLE' WHEN p.provolatile = 'i' THEN 'IMMUTABLE' ELSE '' END as ddl
 FROM pg_proc p
 LEFT JOIN pg_namespace n on n.oid = p.pronamespace
-WHERE p.proowner != 1
+JOIN pg_language l on p.prolang = l.oid
+WHERE p.proowner != 1 AND l.lanname <> 'plpgsql'
 UNION ALL
 SELECT 
    n.nspname AS schemaname,
@@ -72,7 +79,8 @@ SELECT
 6000 AS seq, 'AS $$' as ddl
 FROM pg_proc p
 LEFT JOIN pg_namespace n on n.oid = p.pronamespace
-WHERE p.proowner != 1
+JOIN pg_language l on p.prolang = l.oid
+WHERE p.proowner != 1 AND l.lanname <> 'plpgsql'
 UNION ALL
 SELECT 
    n.nspname AS schemaname,
@@ -81,7 +89,8 @@ SELECT
 7000 AS seq, p.prosrc as DDL
 FROM pg_proc p
 LEFT JOIN pg_namespace n on n.oid = p.pronamespace
-WHERE p.proowner != 1
+JOIN pg_language l on p.prolang = l.oid
+WHERE p.proowner != 1 AND l.lanname <> 'plpgsql'
 UNION ALL
 SELECT 
    n.nspname AS schemaname,
@@ -91,6 +100,6 @@ SELECT
 FROM pg_proc p
 LEFT JOIN pg_namespace n on n.oid = p.pronamespace
 LEFT JOIN (select oid, lanname FROM pg_language) lang on p.prolang = lang.oid
-WHERE p.proowner != 1
+WHERE p.proowner != 1 AND lang.lanname <> 'plpgsql'
 )
 ORDER BY udfoid,seq;

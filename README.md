@@ -71,9 +71,6 @@ This [project](src/SnapshotManager) includes a Lambda function that will ensure 
 
 This [project](src/QMRNotificationUtility) enables a scheduled Lambda function to pull records from the QMR action system log table (stl_wlm_rule_action) and publish them to an SNS topic. This utility can be used to send periodic notifications based on the WLM query monitoring rule actions taken for your unique workload and rules configuration.
 
-# Presentation
-We included a presentation which describes main features of the Amazon-Redshift-Utils including some examples, tips and best practices: Redshift_DBA_Commands.pptx
-
 # Investigations
 This project includes a number of detailed investigations into various types of Redshift edge cases, nuances, and workload scenarios. 
 
@@ -83,6 +80,13 @@ You can provide a Redshift password as a base64 encoded KMS encrypted string in 
 
 Please note that this feature was added due to requests by customers, but does not represent the most secure solution. It stores the password in plaintext, which depending on how modules are deployed may be a security threat. Please use with caution!
 
+# Running utilities
+
+From the command line, you can run the utilities from the `src` directory with:
+
+```
+python3 ./<folder>/<utility> <args>
+```
 # Docker executions
 The Dockerfile provides an environment to execute the following utilities without having to install any dependencies locally:
 * Analyze & Vacuum Utility

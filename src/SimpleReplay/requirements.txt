@@ -1,0 +1,5 @@
+boto3
+pyodbc
+pg8000
+PyYAML
+python-dateutil==2.8.1
